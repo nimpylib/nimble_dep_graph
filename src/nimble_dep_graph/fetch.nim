@@ -4,11 +4,11 @@ when not defined(js):
   import std/[os, times, algorithm]
 
 import ./[types, defaults, parserepo, remoteContent]
-export types, defaults, parserepo, ApiClient
+export types, defaults, parserepo, remoteContent
 
-proc findNimbleFile(client: ApiClient, repo: string): Option[string] =
+proc findNimbleFile(client: ApiClient, repo: string): Future[Option[string]]{.async.} =
   let apiUrl = &"https://api.github.com/repos/{repo}/contents"
-  let payload = getJson(client, apiUrl)
+  let payload = await getJson(client, apiUrl)
 
   if payload.kind != JArray:
     info &"GitHub contents payload for {repo} is not a list, but {payload.kind}"
@@ -73,7 +73,7 @@ when not defined(js):
     info &"Matched local dirs for {repo} but found no .nimble file"
     none(string)
 
-proc fetchRepoMetadata*(client: ApiClient, repo: string, pkgs2Dir: Option[string]): RepoMetadata =
+proc fetchRepoMetadata*(client: ApiClient, repo: string, pkgs2Dir: Option[string]): Future[RepoMetadata]{.async.} =
   when not defined(js):
     if pkgs2Dir.isSome:
       let localNimble = findLocalNimbleFile(pkgs2Dir.get(), repo)
@@ -84,13 +84,13 @@ proc fetchRepoMetadata*(client: ApiClient, repo: string, pkgs2Dir: Option[string
         info &"Parsed {deps.len} direct deps from local {nimblePath}"
         return RepoMetadata(repo: repo, nimbleFile: some(nimblePath), deps: deps)
 
-  let nimbleUrl = findNimbleFile(client, repo)
+  let nimbleUrl = await findNimbleFile(client, repo)
   if nimbleUrl.isNone:
     info &"Skipping deps parse for {repo} because no nimble file was found."
     return RepoMetadata(repo: repo, nimbleFile: none(string), deps: @[])
 
   let url = nimbleUrl.get()
-  let nimbleText = getText(client, url)
+  let nimbleText = await getText(client, url)
   let parts = url.rsplit('/', maxsplit = 1)
   let fileName = parts[^1]
   let deps = parsePylibDeps(nimbleText, repo, fileName)

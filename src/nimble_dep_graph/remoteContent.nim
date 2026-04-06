@@ -2,14 +2,19 @@
 import std/[options, json, strutils]
 
 when defined(js):
-  import std/[jsfetch, jsheaders, jsasync]
+  import std/[jsfetch, jsheaders, asyncjs]
+  export asyncjs
 else:
-  import std/[httpclient, httpcore]
+  import std/[
+    httpclient,
+    httpcore,
+    asyncdispatch
+  ]
+  export asyncdispatch
 
 type
   ApiClient* = object
     token*: Option[string]
-    timeoutMs*: int
 
 template buildHeadersCommon(T) =
   if token.isSome:
@@ -30,10 +35,10 @@ when not defined(js):
     result = newHttpHeaders()
     buildHeadersCommon(`$`)
 
-  proc getText(client: ApiClient, url: string): string =
-    var http = newHttpClient(timeout = client.timeoutMs, headers = buildHeaders(client.token, url))
+  proc getText(client: ApiClient, url: string): Future[string]{.async.} =
+    var http = newAsyncHttpClient(headers = buildHeaders(client.token, url))
     defer: http.close()
-    result = http.getContent(url)
+    result = await http.getContent(url)
 
 else:
   proc buildHeaders(token: Option[string], url: string): Headers =
@@ -43,8 +48,8 @@ else:
   proc getText(client: ApiClient, url: string): Future[string]{.async.} =
     let h = buildHeaders(client.token, url)
     let opt = newfetchOptions(headers = h)
-    await fetch(url.cstring, opt)
+    result = $(await (await fetch(url.cstring, opt)).text())
 
 export getText
-proc getJson*(client: ApiClient, url: string): JsonNode =
-  result = parseJson(getText(client, url))
+proc getJson*(client: ApiClient, url: string): Future[JsonNode] {.async.} =
+  result = parseJson(await getText(client, url))

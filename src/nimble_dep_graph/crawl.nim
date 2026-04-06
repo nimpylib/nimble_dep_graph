@@ -7,7 +7,7 @@ proc crawlDependencyGraph*(
   entryRepos: seq[string],
   maxRepos: int,
   pkgs2Dir: Option[string]
-): (Graph, Table[string, RepoMetadata], Table[string, string]) =
+): Future[(Graph, Table[string, RepoMetadata], Table[string, string])]{.async.} =
   var graph = initGraph()
   var metadata = initTable[string, RepoMetadata]()
   var errors = initTable[string, string]()
@@ -15,7 +15,7 @@ proc crawlDependencyGraph*(
 
   info &"Starting crawl with entry repos: {entryRepos}, maxRepos: {maxRepos}"
 
-  proc visit(repo: string, depth: int) =
+  proc visit(repo: string, depth: int){.async.} =
     if visited.hasKey(repo):
       return
     if visited.len >= maxRepos:
@@ -27,12 +27,13 @@ proc crawlDependencyGraph*(
     graph.addNode(repo)
 
     try:
-      let repoMeta = fetchRepoMetadata(client, repo, pkgs2Dir)
+      let repoMetaFuture = fetchRepoMetadata(client, repo, pkgs2Dir)
+      let repoMeta = await repoMetaFuture
       metadata[repo] = repoMeta
 
       for dep in repoMeta.deps:
         graph.addEdge(Edge(src: repo, dst: dep.repo, version: dep.version, sourceFile: dep.sourceFile))
-        visit(dep.repo, depth + 1)
+        await visit(dep.repo, depth + 1)
     except ValueError as exc:
       errors[repo] = "Parse error: " & exc.msg
       warn &"Failed to parse {repo}: {errors[repo]}"
@@ -44,6 +45,6 @@ proc crawlDependencyGraph*(
       warn &"Failed to fetch {repo}: {errors[repo]}"
 
   for entryRepo in entryRepos:
-    visit(entryRepo, 0)
+    await visit(entryRepo, 0)
 
   result = (graph, metadata, errors)

@@ -1,7 +1,7 @@
-import std/[algorithm, json, logging, options, os, sequtils, strformat, strutils, tables]
+import std/[algorithm, json, logging, options, sequtils, strformat, strutils, tables]
 
 when not defined(js):
-  import std/osproc
+  import std/[os, osproc]
 
 import ./[fetch, graph, crawl]
 
@@ -126,16 +126,21 @@ proc defaultPkgs2Dir(): string =
   else:
     getHomeDir() / ".nimble" / "pkgs2"
 
-proc runApp*(
+const
+  MaxRepos = 200
+  OutputDir = "./out"
+  LogLevel = "INFO"
+
+proc runAppAync*(
   entryRepos: seq[string] = @[DefPackage],
-  maxRepos = 200,
+  maxRepos = MaxRepos,
   token = "",
-  outputDir = "./out",
+  outputDir = OutputDir,
   noSvg = false,
-  logLevel = "INFO",
+  logLevel = LogLevel,
   nimblePkgs2Dir = "",
   noLocalPkgs2 = false
-): int =
+): Future[int]{.async.} =
   result = try:
     addHandler(newConsoleLogger(levelThreshold = parseLogLevel(logLevel), fmtStr = "$levelname $msg"))
 
@@ -163,8 +168,8 @@ proc runApp*(
     if pkgs2Dir.isSome:
       info &"Local pkgs2 metadata enabled: {pkgs2Dir.get()}"
 
-    let client = ApiClient(token: tokenOpt, timeoutMs: 20_000)
-    let (graph, metadata, errors) = crawlDependencyGraph(
+    let client = ApiClient(token: tokenOpt)
+    let (graph, metadata, errors) = await crawlDependencyGraph(
       client = client,
       entryRepos = validatedRepos,
       maxRepos = maxRepos,
@@ -210,22 +215,44 @@ proc runApp*(
       stderr.writeLine("ERROR " & exc.msg)
     1
 
+when not defined(js):
+  proc runApp*(
+    entryRepos: seq[string] = @[DefPackage],
+    maxRepos = 200,
+    token = "",
+    outputDir = "./out",
+    noSvg = false,
+    logLevel = "INFO",
+    nimblePkgs2Dir = "",
+    noLocalPkgs2 = false
+  ): int =
+    waitFor runAppAync(
+      entryRepos = entryRepos,
+      maxRepos = maxRepos,
+      token = token,
+      outputDir = outputDir,
+      noSvg = noSvg,
+      logLevel = logLevel,
+      nimblePkgs2Dir = nimblePkgs2Dir,
+      noLocalPkgs2 = noLocalPkgs2
+    )
+
 proc runAppJs*(
   entryReposCsv = DefPackage,
-  maxRepos = 200,
+  maxRepos = MaxRepos,
   token = "",
-  outputDir = "./out",
+  outputDir = OutputDir,
   noSvg = false,
-  logLevel = "INFO",
+  logLevel = LogLevel,
   nimblePkgs2Dir = "",
   noLocalPkgs2 = false
-): cint {.exportc.} =
+): Future[cint] {.async, exportc.} =
   let repos = entryReposCsv
     .split(',')
     .mapIt(it.strip())
     .filterIt(it.len > 0)
   let resolvedPkgs2 = if nimblePkgs2Dir.len > 0: nimblePkgs2Dir else: defaultPkgs2Dir()
-  result = cint(runApp(
+  result = cint(await runAppAync(
     entryRepos = if repos.len > 0: repos else: @[DefPackage],
     maxRepos = maxRepos,
     token = token,
