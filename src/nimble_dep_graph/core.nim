@@ -25,91 +25,60 @@ proc repoMetadataToJson(meta: RepoMetadata): JsonNode =
     depsNode.add(depToJson(dep))
   result["deps"] = depsNode
 
-when defined(js):
-  proc writeOutputs(
-    outputDir: string,
-    entryRepos: seq[string],
-    graph: Graph,
-    metadata: Table[string, RepoMetadata],
-    errors: Table[string, string],
-    renderSvg: bool
-  ) =
-    discard outputDir
-    discard entryRepos
-    discard graph
-    discard metadata
-    discard errors
-    discard renderSvg
-    warn("File output is unavailable on JS backend.")
-else:
-  proc writeOutputs(
-    outputDir: string,
-    entryRepos: seq[string],
-    graph: Graph,
-    metadata: Table[string, RepoMetadata],
-    errors: Table[string, string],
-    renderSvg: bool
-  ) =
-    discard existsOrCreateDir(outputDir)
+proc getOutputs(
+  entryRepos: seq[string],
+  graph: Graph,
+  metadata: Table[string, RepoMetadata],
+  errors: Table[string, string],
+): tuple[json, dot, mermaid: string] =
 
-    let jsonPath = outputDir / "deps.graph.json"
-    let dotPath = outputDir / "deps.graph.dot"
-    let mermaidPath = outputDir / "deps.graph.mmd"
-    let svgPath = outputDir / "deps.graph.svg"
+  var payload = newJObject()
 
-    var payload = newJObject()
+  var entryReposNode = newJArray()
+  for repo in entryRepos:
+    entryReposNode.add(%repo)
+  payload["entry_repos"] = entryReposNode
+  if entryRepos.len > 0:
+    payload["entry_repo"] = %entryRepos[0]
+  else:
+    payload["entry_repo"] = newJNull()
 
-    var entryReposNode = newJArray()
-    for repo in entryRepos:
-      entryReposNode.add(%repo)
-    payload["entry_repos"] = entryReposNode
-    if entryRepos.len > 0:
-      payload["entry_repo"] = %entryRepos[0]
-    else:
-      payload["entry_repo"] = newJNull()
+  payload["summary"] = %*{
+    "nodes": graph.nodes.len,
+    "edges": graph.edges.len,
+    "errors": errors.len
+  }
 
-    payload["summary"] = %*{
-      "nodes": graph.nodes.len,
-      "edges": graph.edges.len,
-      "errors": errors.len
-    }
+  var reposNode = newJObject()
+  var repos = toSeq(metadata.keys)
+  repos.sort(system.cmp[string])
+  for repo in repos:
+    reposNode[repo] = repoMetadataToJson(metadata[repo])
+  payload["repos"] = reposNode
 
-    var reposNode = newJObject()
-    var repos = toSeq(metadata.keys)
-    repos.sort(system.cmp[string])
-    for repo in repos:
-      reposNode[repo] = repoMetadataToJson(metadata[repo])
-    payload["repos"] = reposNode
+  var edgesNode = newJArray()
+  for edge in graph.edges:
+    edgesNode.add(%*{
+      "from": edge.src,
+      "to": edge.dst,
+      "version": edge.version,
+      "source_file": edge.sourceFile
+    })
+  payload["edges"] = edgesNode
 
-    var edgesNode = newJArray()
-    for edge in graph.edges:
-      edgesNode.add(%*{
-        "from": edge.src,
-        "to": edge.dst,
-        "version": edge.version,
-        "source_file": edge.sourceFile
-      })
-    payload["edges"] = edgesNode
+  var errorsNode = newJObject()
+  var errRepos = toSeq(errors.keys)
+  errRepos.sort(system.cmp[string])
+  for repo in errRepos:
+    errorsNode[repo] = %errors[repo]
+  payload["errors"] = errorsNode
 
-    var errorsNode = newJObject()
-    var errRepos = toSeq(errors.keys)
-    errRepos.sort(system.cmp[string])
-    for repo in errRepos:
-      errorsNode[repo] = %errors[repo]
-    payload["errors"] = errorsNode
+  (
+    payload.pretty(2) & "\n",
+    toDot(graph),
+    toMermaid(graph)
+  )
 
-    writeFile(jsonPath, payload.pretty(2) & "\n")
-    writeFile(dotPath, toDot(graph))
-    writeFile(mermaidPath, toMermaid(graph))
-
-    if renderSvg:
-      let command = "dot -Tsvg " & quoteShell(dotPath) & " -o " & quoteShell(svgPath)
-      let (output, exitCode) = execCmdEx(command)
-      if exitCode == 0:
-        logging.log(lvlInfo, &"Rendered SVG graph to {svgPath}")
-      else:
-        let msg = if output.strip().len > 0: output.strip() else: "unknown error"
-        logging.log(lvlWarn, &"Graphviz render failed: {msg}")
 
 proc parseLogLevel(value: string): Level =
   case value.toUpperAscii()
@@ -131,7 +100,12 @@ const
   OutputDir = "./out"
   LogLevel = "INFO"
 
-proc runAppAync*(
+type Tup3 = tuple[
+  json: string,
+  dot: string,
+  mermaid: string
+]
+proc runAppAync*[R: int|Tup3 =Tup3](
   entryRepos: seq[string] = @[DefPackage],
   maxRepos = MaxRepos,
   token = "",
@@ -140,8 +114,11 @@ proc runAppAync*(
   logLevel = LogLevel,
   nimblePkgs2Dir = "",
   noLocalPkgs2 = false
-): Future[int]{.async.} =
-  result = try:
+): Future[R]{.async.} =
+  template reti(i) =
+    when R is int:
+      return i
+  try:
     addHandler(newConsoleLogger(levelThreshold = parseLogLevel(logLevel), fmtStr = "$levelname $msg"))
 
     var validatedRepos: seq[string]
@@ -176,47 +153,67 @@ proc runAppAync*(
       pkgs2Dir = pkgs2Dir
     )
 
-    writeOutputs(
-      outputDir = outputDir,
+    let tup = getOutputs(
       entryRepos = validatedRepos,
       graph = graph,
       metadata = metadata,
       errors = errors,
-      renderSvg = not noSvg
     )
-
-    echo "Entry repos: " & validatedRepos.join(", ")
-    echo "Graph nodes: " & $graph.nodes.len
-    echo "Graph edges: " & $graph.edges.len
-    echo "Errors: " & $errors.len
-    when defined(js):
-      echo "Outputs: " & outputDir
+    when R is_not int:
+      return tup
     else:
-      echo "Outputs: " & absolutePath(outputDir)
-    if errors.len > 0:
-      echo ""
-      echo "[WARN] Repos with errors:"
-      var keys = toSeq(errors.keys)
-      keys.sort(system.cmp[string])
-      for repo in keys:
-        echo "  - " & repo & ": " & errors[repo]
+      discard existsOrCreateDir(outputDir)
 
-    0
+      let jsonPath = outputDir / "deps.graph.json"
+      let dotPath = outputDir / "deps.graph.dot"
+      let mermaidPath = outputDir / "deps.graph.mmd"
+      let svgPath = outputDir / "deps.graph.svg"
+
+      writeFile(jsonPath, tup.json)
+      writeFile(dotPath, tup.dot)
+      writeFile(mermaidPath, tup.mermaid)
+      if not noSvg:
+        let command = "dot -Tsvg " & quoteShell(dotPath) & " -o " & quoteShell(svgPath)
+        let (output, exitCode) = execCmdEx(command)
+        if exitCode == 0:
+          info &"Rendered SVG graph to {svgPath}"
+        else:
+          let msg = if output.strip().len > 0: output.strip() else: "unknown error"
+          warn &"Graphviz render failed: {msg}"
+
+
+      echo "Entry repos: " & validatedRepos.join(", ")
+      echo "Graph nodes: " & $graph.nodes.len
+      echo "Graph edges: " & $graph.edges.len
+      echo "Errors: " & $errors.len
+      when defined(js):
+        echo "Outputs: " & outputDir
+      else:
+        echo "Outputs: " & absolutePath(outputDir)
+      if errors.len > 0:
+        echo ""
+        echo "[WARN] Repos with errors:"
+        var keys = toSeq(errors.keys)
+        keys.sort(system.cmp[string])
+        for repo in keys:
+          echo "  - " & repo & ": " & errors[repo]
+
+      reti 0
   except ValueError as exc:
     when defined(js):
       echo "ERROR " & exc.msg
     else:
       stderr.writeLine("ERROR " & exc.msg)
-    2
+    reti 2
   except CatchableError as exc:
     when defined(js):
       echo "ERROR " & exc.msg
     else:
       stderr.writeLine("ERROR " & exc.msg)
-    1
+    reti 1
 
 when not defined(js):
-  proc runApp*(
+  proc runCliApp*(
     entryRepos: seq[string] = @[DefPackage],
     maxRepos = 200,
     token = "",
@@ -226,7 +223,7 @@ when not defined(js):
     nimblePkgs2Dir = "",
     noLocalPkgs2 = false
   ): int =
-    waitFor runAppAync(
+    waitFor runAppAync[int](
       entryRepos = entryRepos,
       maxRepos = maxRepos,
       token = token,
@@ -237,28 +234,34 @@ when not defined(js):
       noLocalPkgs2 = noLocalPkgs2
     )
 
-proc runAppJs*(
+proc runApp*(
+  outputType: cstring,
   entryReposCsv = DefPackage,
   maxRepos = MaxRepos,
   token = "",
   outputDir = OutputDir,
-  noSvg = false,
   logLevel = LogLevel,
   nimblePkgs2Dir = "",
   noLocalPkgs2 = false
-): Future[cint] {.async, exportc.} =
+): Future[cstring] {.async, exportc.} =
   let repos = entryReposCsv
     .split(',')
     .mapIt(it.strip())
     .filterIt(it.len > 0)
   let resolvedPkgs2 = if nimblePkgs2Dir.len > 0: nimblePkgs2Dir else: defaultPkgs2Dir()
-  result = cint(await runAppAync(
+  let res = await runAppAync[](
     entryRepos = if repos.len > 0: repos else: @[DefPackage],
     maxRepos = maxRepos,
     token = token,
     outputDir = outputDir,
-    noSvg = noSvg,
+    noSvg = true,
     logLevel = logLevel,
     nimblePkgs2Dir = resolvedPkgs2,
     noLocalPkgs2 = noLocalPkgs2
-  ))
+  )
+  for t, v in res.fieldPairs:
+    if t == outputType:
+      return v.cstring
+  raise newException(ValueError, &"Invalid output type: {outputType}. Expected one of: json, dot, mermaid.")
+
+proc runAppWithDefaults*(outputType: cstring): Future[cstring] {.async, exportc.} = return await runApp(outputType)
