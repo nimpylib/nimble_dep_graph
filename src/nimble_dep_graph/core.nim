@@ -162,7 +162,7 @@ proc runAppAync*[R: int|Tup3 =Tup3](
     when R is_not int:
       return tup
     else:
-      discard existsOrCreateDir(outputDir)
+      createDir(outputDir)
 
       let jsonPath = outputDir / "deps.graph.json"
       let dotPath = outputDir / "deps.graph.dot"
@@ -182,34 +182,32 @@ proc runAppAync*[R: int|Tup3 =Tup3](
           warn &"Graphviz render failed: {msg}"
 
 
-      echo "Entry repos: " & validatedRepos.join(", ")
-      echo "Graph nodes: " & $graph.nodes.len
-      echo "Graph edges: " & $graph.edges.len
-      echo "Errors: " & $errors.len
+      info "Entry repos: " & validatedRepos.join(", ")
+      info "Graph nodes: " & $graph.nodes.len
+      info "Graph edges: " & $graph.edges.len
+      info "Errors: " & $errors.len
       when defined(js):
-        echo "Outputs: " & outputDir
+        info "Outputs: " & outputDir
       else:
-        echo "Outputs: " & absolutePath(outputDir)
+        info "Outputs: " & absolutePath(outputDir)
       if errors.len > 0:
-        echo ""
-        echo "[WARN] Repos with errors:"
+        var errs = ""
+        template addLine(s: string) =
+          errs.add(s)
+          errs.add '\n'
+        addLine "Repos with errors:"
         var keys = toSeq(errors.keys)
         keys.sort(system.cmp[string])
         for repo in keys:
-          echo "  - " & repo & ": " & errors[repo]
+          addLine "  - " & repo & ": " & errors[repo]
+        error errs
 
       reti 0
   except ValueError as exc:
-    when defined(js):
-      echo "ERROR " & exc.msg
-    else:
-      stderr.writeLine("ERROR " & exc.msg)
+    error "ERROR " & exc.msg
     reti 2
   except CatchableError as exc:
-    when defined(js):
-      echo "ERROR " & exc.msg
-    else:
-      stderr.writeLine("ERROR " & exc.msg)
+    error "ERROR " & exc.msg
     reti 1
 
 when not defined(js):
