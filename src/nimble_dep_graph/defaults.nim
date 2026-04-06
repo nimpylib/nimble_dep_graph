@@ -1,4 +1,4 @@
 
 const
-  DefPackage* = "nimpylib/nimpylib"
+  DefPackages* = ["nimpylib/nimpylib", "nimpylib/npython"]
   DefOrg* = "nimpylib/"

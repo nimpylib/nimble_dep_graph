@@ -6,7 +6,7 @@ proc validateRepo*(repo: string): string =
   let trimmed = repo.strip(chars = {' ', '/'})
   let parts = trimmed.split('/')
   if parts.len != 2 or parts[0].len == 0 or parts[1].len == 0:
-    raise newException(ValueError, &"Invalid repo '{repo}'. Expected format 'owner/name', e.g. {DefPackage}.")
+    raise newException(ValueError, &"Invalid repo '{repo}'. Expected format 'owner/name', e.g. {DefPackages[0]}.")
   &"{parts[0]}/{parts[1]}"
 
 proc normalizeDepRepo(depValue: string, owner: string): string =

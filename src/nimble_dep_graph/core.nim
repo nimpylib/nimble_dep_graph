@@ -26,7 +26,7 @@ proc repoMetadataToJson(meta: RepoMetadata): JsonNode =
   result["deps"] = depsNode
 
 proc getOutputs(
-  entryRepos: seq[string],
+  entryRepos: openArray[string],
   graph: Graph,
   metadata: Table[string, RepoMetadata],
   errors: Table[string, string],
@@ -106,7 +106,7 @@ type Tup3 = tuple[
   mermaid: string
 ]
 proc runAppAync*[R: int|Tup3 =Tup3](
-  entryRepos: seq[string] = @[DefPackage],
+  entryRepos: seq[string] = @DefPackages,
   maxRepos = MaxRepos,
   token = "",
   outputDir = OutputDir,
@@ -214,7 +214,7 @@ proc runAppAync*[R: int|Tup3 =Tup3](
 
 when not defined(js):
   proc runCliApp*(
-    entryRepos: seq[string] = @[DefPackage],
+    entryRepos: seq[string] = @DefPackages,
     maxRepos = 200,
     token = "",
     outputDir = "./out",
@@ -236,7 +236,7 @@ when not defined(js):
 
 proc runApp*(
   outputType: cstring,
-  entryReposCsv = DefPackage,
+  entryReposCsv = DefPackages.join(","),
   maxRepos = MaxRepos,
   token = "",
   outputDir = OutputDir,
@@ -250,7 +250,7 @@ proc runApp*(
     .filterIt(it.len > 0)
   let resolvedPkgs2 = if nimblePkgs2Dir.len > 0: nimblePkgs2Dir else: defaultPkgs2Dir()
   let res = await runAppAync[](
-    entryRepos = if repos.len > 0: repos else: @[DefPackage],
+    entryRepos = if repos.len > 0: repos else: @DefPackages,
     maxRepos = maxRepos,
     token = token,
     outputDir = outputDir,
