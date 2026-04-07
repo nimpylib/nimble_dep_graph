@@ -1,20 +1,25 @@
 
 import std/[options, json, strutils]
+import std/[httpcore,]
+export httpcore
 
 when defined(js):
   import std/[jsfetch, jsheaders, asyncjs]
   export asyncjs
+  type HttpRequestError* = object of IOError
 else:
   import std/[
     httpclient,
-    httpcore,
     asyncdispatch
   ]
   export asyncdispatch
+  export httpclient.HttpRequestError
 
 type
   ApiClient* = object
     token*: Option[string]
+
+func newApiClient*(token: string): ApiClient = ApiClient(token: some token)
 
 template buildHeadersCommon(T) =
   if token.isSome:
@@ -35,19 +40,27 @@ when not defined(js):
     result = newHttpHeaders()
     buildHeadersCommon(`$`)
 
-  proc getText(client: ApiClient, url: string): Future[string]{.async.} =
+  proc getText(client: ApiClient, url: string, httpMethod = HttpGet, body = ""): Future[string]{.async.} =
     var http = newAsyncHttpClient(headers = buildHeaders(client.token, url))
     defer: http.close()
-    result = await http.getContent(url)
+    var res: AsyncResponse = await http.request(url, httpMethod, body)
+    result = await res.body
 
 else:
   proc buildHeaders(token: Option[string], url: string): Headers =
     result = newHeaders()
     buildHeadersCommon(cstring)
 
-  proc getText(client: ApiClient, url: string): Future[string]{.async.} =
+  proc getText(client: ApiClient, url: string, httpMethod = HttpGet, body = ""): Future[string]{.async.} =
     let h = buildHeaders(client.token, url)
-    let opt = newfetchOptions(headers = h)
+    var nbody: cstring = nil
+    if body.len > 0:
+      nbody = cstring body
+    let opt = newfetchOptions(httpMethod, headers = h,
+      cache = fchNoStore,
+      referrer = cstring"about:client",
+      body = nbody,
+    )
     result = $(await (await fetch(url.cstring, opt)).text())
 
 export getText

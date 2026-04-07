@@ -3,7 +3,7 @@ import std/[algorithm, json, logging, options, sequtils, strformat, strutils, ta
 when not defined(js):
   import std/[os, osproc]
 
-import ./[fetch, graph, crawl]
+import ./[fetch, graph, crawl, dailycache]
 
 proc depToJson(dep: DependencySpec): JsonNode =
   %*{
@@ -138,10 +138,11 @@ proc runAppAync*[R: int|Tup3 =Tup3](
     let resolvedPkgs2Dir = if nimblePkgs2Dir.len > 0: nimblePkgs2Dir else: defaultPkgs2Dir()
     let tokenOpt = if resolvedToken.len > 0: some(resolvedToken) else: none(string)
     let pkgs2Dir =
-      when defined(js):
-        if noLocalPkgs2: none(string) else: some(resolvedPkgs2Dir)
+      if noLocalPkgs2: none(string) else: some(when defined(js):
+        resolvedPkgs2Dir
       else:
-        if noLocalPkgs2: none(string) else: some(expandTilde(resolvedPkgs2Dir))
+        expandTilde(resolvedPkgs2Dir)
+      )
     if pkgs2Dir.isSome:
       info &"Local pkgs2 metadata enabled: {pkgs2Dir.get()}"
 
@@ -232,6 +233,31 @@ when not defined(js):
       noLocalPkgs2 = noLocalPkgs2
     )
 
+proc toKey(outputType: cstring, entryRepos: seq[string], maxRepos: int, nimblePkgs2Dir: string, noLocalPkgs2: bool): string =
+  let reposPart = entryRepos.mapIt(it.strip()).filterIt(it.len > 0).sorted().join("_AND-")
+  let localPkgs2Part = if noLocalPkgs2: "" else: "_AT-" & nimblePkgs2Dir
+  result = &"{reposPart}_N-{maxRepos}{localPkgs2Part}.{outputType}"
+  result = result.replace("/", "_SEP-")
+
+var cache: CacheBackendAbc
+type CfEnv*{.pure, exportc.} = object
+  CF_ACCOUNT_ID*: cstring
+  CF_NAMESPACE_ID*: cstring
+  CF_API_KEY*: cstring
+
+proc newCfKvApiCacheBackendFrom*(env: CfEnv): CfApiCacheBackend =
+  newCfKvApiCacheBackend(
+    account_id=   $env.CF_ACCOUNT_ID,
+    namespace_id= $env.CF_NAMESPACE_ID,
+    api_key=      $env.CF_API_KEY
+  )
+proc initCfCacheFrom(env: CfEnv){.exportc.} =
+  for i, v in env.fieldPairs:
+    when defined(js):
+      assert not v.isUndefined
+    assert v.isNil.not and v.len != 0
+  cache = newCfKvApiCacheBackendFrom(env)
+
 proc runApp*(
   outputType: cstring,
   entryReposCsv = DefPackages.join(","),
@@ -247,19 +273,28 @@ proc runApp*(
     .mapIt(it.strip())
     .filterIt(it.len > 0)
   let resolvedPkgs2 = if nimblePkgs2Dir.len > 0: nimblePkgs2Dir else: defaultPkgs2Dir()
-  let res = await runAppAync[](
-    entryRepos = if repos.len > 0: repos else: @DefPackages,
-    maxRepos = maxRepos,
-    token = token,
-    outputDir = outputDir,
-    noSvg = true,
-    logLevel = logLevel,
-    nimblePkgs2Dir = resolvedPkgs2,
-    noLocalPkgs2 = noLocalPkgs2
-  )
-  for t, v in res.fieldPairs:
-    if t == outputType:
-      return v.cstring
-  raise newException(ValueError, &"Invalid output type: {outputType}. Expected one of: json, dot, mermaid.")
+  proc getter(): Future[string] {.async.} =
+    let res = await runAppAync[](
+      entryRepos = if repos.len > 0: repos else: @DefPackages,
+      maxRepos = maxRepos,
+      token = token,
+      outputDir = outputDir,
+      noSvg = true,
+      logLevel = logLevel,
+      nimblePkgs2Dir = resolvedPkgs2,
+      noLocalPkgs2 = noLocalPkgs2
+    )
+    for t, v in res.fieldPairs:
+      if t == outputType:
+        return v
+    raise newException(ValueError, &"Invalid output type: {outputType}. Expected one of: json, dot, mermaid.")
+  if not cache.isNil:
+    let key = toKey(outputType, repos, maxRepos, resolvedPkgs2, noLocalPkgs2)
+    let cached = await cache.getDailyCachedOr(key, getter)
+    return cstring(cached)
+  else:
+    info "No cache backend configured. Skipping cache."
+    let res = await getter()
+    return cstring res
 
 proc runAppWithDefaults*(outputType: cstring): Future[cstring] {.async, exportc.} = return await runApp(outputType)
