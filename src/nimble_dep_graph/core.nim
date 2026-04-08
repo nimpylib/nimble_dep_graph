@@ -2,6 +2,8 @@ import std/[algorithm, json, logging, options, sequtils, strformat, strutils, ta
 
 when not defined(js):
   import std/[os, osproc]
+else:
+  import std/jsffi
 
 import ./[fetch, graph, crawl, dailycache]
 
@@ -24,6 +26,7 @@ proc repoMetadataToJson(meta: RepoMetadata): JsonNode =
   for dep in meta.deps:
     depsNode.add(depToJson(dep))
   result["deps"] = depsNode
+
 
 proc getOutputs(
   entryRepos: openArray[string],
@@ -79,8 +82,11 @@ proc getOutputs(
     toMermaid(graph)
   )
 
-
-proc parseLogLevel(value: string): Level =
+proc toUpperAscii(s: cstring): string =
+  result = newString(s.len)
+  for i, c in s: result[i] = c.toUpperAscii
+  
+proc parseLogLevel(value: cstring|string): Level =
   case value.toUpperAscii()
   of "DEBUG": lvlDebug
   of "INFO": lvlInfo
@@ -111,7 +117,7 @@ proc runAppAync*[R: int|Tup3 =Tup3](
   token = "",
   outputDir = OutputDir,
   noSvg = false,
-  logLevel = LogLevel,
+  logLevel: cstring|string = LogLevel,
   nimblePkgs2Dir = "",
   noLocalPkgs2 = false
 ): Future[R]{.async.} =
@@ -258,21 +264,38 @@ proc initCfCacheFrom(env: CfEnv){.exportc.} =
     assert v.isNil.not and v.len != 0
   cache = newCfKvApiCacheBackendFrom(env)
 
+when defined(nimble_dep_graph_cacheEnv):
+  import std/os
+  const fn = currentSourcePath() /../ "cacheEnv.json"
+  const s = staticRead(fn)
+  proc initFromJson(dst: var cstring; jsonNode: JsonNode; jsonPath: var string) =
+    #verifyJsonKind(jsonNode, {JString, JNull}, jsonPath)
+    # since strings don't have a nil state anymore, this mapping of
+    # JNull to the default string is questionable. `none(string)` and
+    # `some("")` have the same potentional json value `JNull`.
+    if jsonNode.kind == JNull:
+      dst = ""
+    else:
+      dst = cstring jsonNode.str
+  when s.len > 0:
+    const env = parseJson(s).to CfEnv
+    initCfCacheFrom(env)
+
 proc runApp*(
   outputType: cstring,
   entryReposCsv = DefPackages.join(","),
   maxRepos = MaxRepos,
   token = "",
   outputDir = OutputDir,
-  logLevel = LogLevel,
-  nimblePkgs2Dir = "",
+  logLevel = cstring LogLevel,
+  nimblePkgs2Dir = cstring"",
   noLocalPkgs2 = false
 ): Future[cstring] {.async, exportc.} =
   let repos = entryReposCsv
     .split(',')
     .mapIt(it.strip())
     .filterIt(it.len > 0)
-  let resolvedPkgs2 = if nimblePkgs2Dir.len > 0: nimblePkgs2Dir else: defaultPkgs2Dir()
+  let resolvedPkgs2 = if nimblePkgs2Dir.len > 0: $nimblePkgs2Dir else: defaultPkgs2Dir()
   proc getter(): Future[string] {.async.} =
     let res = await runAppAync[](
       entryRepos = if repos.len > 0: repos else: @DefPackages,
@@ -297,4 +320,30 @@ proc runApp*(
     let res = await getter()
     return cstring res
 
-proc runAppWithDefaults*(outputType: cstring): Future[cstring] {.async, exportc.} = return await runApp(outputType)
+proc runAppWithDefaults*(outputType: cstring, logLevel: cstring): Future[cstring] {.async, exportc.} = return await runApp(outputType, logLevel = logLevel)
+
+when defined(jsCf):
+  ## generate cloudflare worker compatible module export
+  {.emit: """
+export default {
+  async fetch(request, env, ctx) {
+    const headers = {
+      "Content-Type": "application/plain",
+    };
+    const setOrigin = (ori) => headers["Access-Control-Allow-Origin"] = ori;
+    /*const origin = request.headers.host;
+    if (origin && (origin.endswith(".nimpylib.org") || origin.endswith("nimpylib.org"))) {
+      // Only allow CORS requests from our own domain to prevent abuse of the cache API from other origins.
+      // This is a bit tricky because we want to allow subdomains, but Cloudflare Workers doesn't support
+      // wildcard values in Access-Control-Allow-Origin. So we have to check the origin against the allowed pattern
+      // and then echo it back in the header if it matches.
+      setOrigin("https://" + origin);
+    } else {} */
+    setOrigin("*");
+    initCfCacheFrom(env);
+    return new Response(await runAppWithDefaults("mermaid", "INFO"), {
+      headers: headers
+    });
+  },
+};
+""".}
