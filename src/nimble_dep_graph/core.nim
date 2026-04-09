@@ -4,6 +4,7 @@ when not defined(js):
   import std/[os, osproc]
 else:
   import std/jsffi
+  import std/jsfetch
 
 import ./[fetch, graph, crawl, dailycache]
 
@@ -281,6 +282,8 @@ when defined(nimble_dep_graph_cacheEnv):
     const env = parseJson(s).to CfEnv
     initCfCacheFrom(env)
 
+type
+  InvalidOutTypeError* = object of ValueError
 proc runApp*(
   outputType: cstring,
   entryReposCsv = DefPackages.join(","),
@@ -310,7 +313,7 @@ proc runApp*(
     for t, v in res.fieldPairs:
       if t == outputType:
         return v
-    raise newException(ValueError, &"Invalid output type: {outputType}. Expected one of: json, dot, mermaid.")
+    raise newException(InvalidOutTypeError, &"Invalid output type: {outputType}. Expected one of: json, dot, mermaid.")
   if not cache.isNil:
     let key = toKey(outputType, repos, maxRepos, resolvedPkgs2, noLocalPkgs2)
     let cached = await cache.getDailyCachedOr(key, getter)
@@ -322,6 +325,18 @@ proc runApp*(
 
 proc runAppWithDefaults*(outputType: cstring, logLevel: cstring): Future[cstring] {.async, exportc.} = return await runApp(outputType, logLevel = logLevel)
 
+when defined(js):
+  func newResponse(body: cstring, headers: Headers): Response {.
+                                                             importjs: "(new Response(#, { headers: #}))".}
+  #TODO: make arg: Request
+  proc handleRequest*(outputType: cstring, logLevel: cstring, headers: Headers): Future[Response] {.async, exportc.} =
+    try:
+      result = newResponse(await runApp(outputType, logLevel = logLevel), headers)
+    except InvalidOutTypeError as e:
+      let res = newResponse(cstring e.msg)
+      res.status = 400
+      return res
+
 when defined(jsCf):
   ## generate cloudflare worker compatible module export
   {.emit: """
@@ -331,19 +346,22 @@ export default {
       "Content-Type": "application/plain",
     };
     const setOrigin = (ori) => headers["Access-Control-Allow-Origin"] = ori;
-    /*const origin = request.headers.host;
-    if (origin && (origin.endswith(".nimpylib.org") || origin.endswith("nimpylib.org"))) {
+    const url = new URL(request.url);
+    const origin = url.hostname;
+    /*if (origin && (origin.endsWith(".nimpylib.org") || origin === "nimpylib.org" || origin === "localhost")) {
       // Only allow CORS requests from our own domain to prevent abuse of the cache API from other origins.
       // This is a bit tricky because we want to allow subdomains, but Cloudflare Workers doesn't support
       // wildcard values in Access-Control-Allow-Origin. So we have to check the origin against the allowed pattern
       // and then echo it back in the header if it matches.
-      setOrigin("https://" + origin);
-    } else {} */
+      setOrigin(url.protocol + "//" + url.host);
+    }*/
     setOrigin("*");
+    let eIdx = url.pathname.length;
+    if(url.pathname.endsWith("/")) eIdx -= 1;
+    const pathraw = url.pathname.slice(1, eIdx);
+    const arg = pathraw.length === 0 ? "mermaid" : pathraw;
     initCfCacheFrom(env);
-    return new Response(await runAppWithDefaults("mermaid", "INFO"), {
-      headers: headers
-    });
+    return await handleRequest(arg, "INFO", headers);
   },
 };
 """.}
