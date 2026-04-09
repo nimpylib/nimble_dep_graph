@@ -4,7 +4,7 @@ import std/[httpcore,]
 export httpcore
 
 when defined(js):
-  import std/[jsfetch, jsheaders, asyncjs]
+  import std/[jsfetch, jsheaders, asyncjs, jsffi]
   export asyncjs
   type HttpRequestError* = object of IOError
 else:
@@ -61,6 +61,7 @@ else:
       referrer = cstring"about:client",
       body = nbody,
     )
+    discard jsDelete opt.cache  # The 'cache' field on 'RequestInitializerDict' is not implemented.
     result = $(await (await fetch(url.cstring, opt)).text())
 
 export getText
