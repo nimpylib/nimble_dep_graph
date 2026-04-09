@@ -1,0 +1,52 @@
+name: nimble test
+on:
+  push:
+    branches-ignore:
+      - 'feat-*'
+    paths:
+      - '**/*.nim'
+      - './*.nimble'
+      - 'tests/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+  workflow_dispatch:
+env:
+  nim-version: 'stable'
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+    - name: Cache nimble
+      id: cache-nimble
+      uses: actions/cache@v4
+      with:
+        path: ~/.nimble
+        key: ${{ runner.os }}-nimble
+    - uses: jiro4989/setup-nim-action@v2
+      with:
+        nim-version: ${{ env.nim-version }}
+
+    - name: test
+      run: nimble test
+
+    - name: test js
+      run: nimble test -b:js -d:nodejs
+    
+    - name: buildCfJs
+      run: nimble buildCfJs
+    
+    - name: push deploy dist
+      if: github.event_name != 'pull_request'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        cp wrangler.toml bin
+        git switch --orphan deploy
+        mv bin/wrangler.toml .
+        git add wrangler.toml bin/nimble_dep_graph.js
+        git commit -m "Deploy: update nimble_dep_graph.js"
+        git push -f origin deploy
+      
