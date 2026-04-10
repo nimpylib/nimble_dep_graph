@@ -5,6 +5,7 @@ when not defined(js):
 else:
   import std/jsffi
   import std/jsfetch
+  import std/uri
 
 import ./[fetch, graph, crawl, dailycache]
 
@@ -329,9 +330,29 @@ when defined(js):
   func newResponse(body: cstring, headers: Headers): Response {.
                                                              importjs: "(new Response(#, { headers: #}))".}
   #TODO: make arg: Request
-  proc handleRequest*(outputType: cstring, logLevel: cstring, headers: Headers): Future[Response] {.async, exportc.} =
+  proc handleRequest*(request: Request, logLevel: cstring): Future[Response] {.async, exportc.} =
+    let headers = newHeaders()
+    headers["Content-Type"] = "application/plain"
+    template setOrigin(ori) = headers["Access-Control-Allow-Origin"] = ori
+
+    let url = parseUri($request.url)
+    #[
+    let origin = url.hostname
+    if origin.endsWith(".nimpylib.org") or origin == "nimpylib.org" or origin == "localhost":
+      var u = url.scheme & "://" & url.hostname
+      if url.port.len > 0:
+        u.add ':'
+        u.add url.port
+      setOrigin(cstring u)
+    elif url.scheme == "file":
+      setOrigin("*")
+    ]#
+    setOrigin("*")
+    let pathraw = url.path.strip(chars={'/'})
+    let outputType = if pathraw.len == 0: "mermaid" else: pathraw
+
     try:
-      result = newResponse(await runApp(outputType, logLevel = logLevel), headers)
+      result = newResponse(await runApp(cstring outputType, logLevel = logLevel), headers)
     except InvalidOutTypeError as e:
       let res = newResponse(cstring e.msg)
       res.status = 400
@@ -342,26 +363,8 @@ when defined(jsCf):
   {.emit: """
 export default {
   async fetch(request, env, ctx) {
-    const headers = {
-      "Content-Type": "application/plain",
-    };
-    const setOrigin = (ori) => headers["Access-Control-Allow-Origin"] = ori;
-    const url = new URL(request.url);
-    const origin = url.hostname;
-    /*if (origin && (origin.endsWith(".nimpylib.org") || origin === "nimpylib.org" || origin === "localhost")) {
-      // Only allow CORS requests from our own domain to prevent abuse of the cache API from other origins.
-      // This is a bit tricky because we want to allow subdomains, but Cloudflare Workers doesn't support
-      // wildcard values in Access-Control-Allow-Origin. So we have to check the origin against the allowed pattern
-      // and then echo it back in the header if it matches.
-      setOrigin(url.protocol + "//" + url.host);
-    }*/
-    setOrigin("*");
-    let eIdx = url.pathname.length;
-    if(url.pathname.endsWith("/")) eIdx -= 1;
-    const pathraw = url.pathname.slice(1, eIdx);
-    const arg = pathraw.length === 0 ? "mermaid" : pathraw;
     initCfCacheFrom(env);
-    return await handleRequest(arg, "INFO", headers);
+    return await handleRequest(request, "INFO");
   },
 };
 """.}
