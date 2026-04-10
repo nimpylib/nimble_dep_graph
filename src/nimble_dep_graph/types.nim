@@ -12,3 +12,6 @@ type
     repo*: string
     nimbleFile*: Option[string]
     deps*: seq[DependencySpec]
+
+type
+  ApiRateLimitError* = object of IOError

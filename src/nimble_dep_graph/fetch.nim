@@ -6,12 +6,17 @@ when not defined(js):
 import ./[types, defaults, parserepo, remoteContent]
 export types, defaults, parserepo, remoteContent
 
+
 proc findNimbleFile(client: ApiClient, repo: string): Future[Option[string]]{.async.} =
   let apiUrl = &"https://api.github.com/repos/{repo}/contents"
   let payload = await getJson(client, apiUrl)
 
+  if payload.kind == JObject and payload.hasKey("message") and payload["message"].getStr().contains("API rate limit exceeded"):
+    let msg = &"GitHub API rate limit exceeded when accessing {repo}. Consider setting a GITHUB_TOKEN environment variable to increase the limit."
+    error msg
+    raise newException(ApiRateLimitError, msg)
   if payload.kind != JArray:
-    info &"GitHub contents payload for {repo} is not a list, but {payload.kind}"
+    info &"GitHub contents payload for {repo} is not a list, but of kind `{payload.kind}`: {payload}"
     return none(string)
 
   for item in payload.items:

@@ -357,6 +357,10 @@ when defined(js):
       let res = newResponse(cstring e.msg)
       res.status = 400
       return res
+    except ApiRateLimitError as e:
+      let res = newResponse(cstring e.msg)
+      res.status = 429
+      return res
 
 when defined(jsCf):
   ## generate cloudflare worker compatible module export
