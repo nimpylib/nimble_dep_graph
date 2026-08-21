@@ -1,5 +1,8 @@
 import std/[algorithm, json, logging, options, sequtils, strformat, strutils, tables]
 
+const useOsGetEnv = defined(nodejs)
+when useOsGetEnv:
+  import std/envvars
 when not defined(js):
   import std/[os, osproc]
 else:
@@ -8,6 +11,7 @@ else:
   import std/uri
 
 import ./[fetch, graph, crawl, dailycache]
+const GITHUB_TOKEN = "GITHUB_TOKEN"
 
 proc depToJson(dep: DependencySpec): JsonNode =
   %*{
@@ -139,10 +143,10 @@ proc runAppAync*[R: int|Tup3 =Tup3](
       raise newException(ValueError, "--max-repos must be > 0")
 
     let resolvedToken =
-      when defined(js):
+      when defined(js) and not useOsGetEnv:
         token
       else:
-        if token.len > 0: token else: getEnv("GITHUB_TOKEN", "")
+        if token.len > 0: token else: getEnv(GITHUB_TOKEN, "")
     let resolvedPkgs2Dir = if nimblePkgs2Dir.len > 0: nimblePkgs2Dir else: defaultPkgs2Dir()
     let tokenOpt = if resolvedToken.len > 0: some(resolvedToken) else: none(string)
     let pkgs2Dir =
@@ -248,10 +252,12 @@ proc toKey(outputType: cstring, entryRepos: seq[string], maxRepos: int, nimblePk
   result = result.replace("/", "_SEP-")
 
 var cache: CacheBackendAbc
+var gh_token: string
 type CfEnv*{.pure, exportc.} = object
   CF_ACCOUNT_ID*: cstring
   CF_NAMESPACE_ID*: cstring
   CF_API_KEY*: cstring
+  GITHUB_TOKEN*: cstring
 
 proc newCfKvApiCacheBackendFrom*(env: CfEnv): CfApiCacheBackend =
   newCfKvApiCacheBackend(
@@ -265,6 +271,7 @@ proc initCfCacheFrom(env: CfEnv){.exportc.} =
       assert not v.isUndefined
     assert v.isNil.not and v.len != 0
   cache = newCfKvApiCacheBackendFrom(env)
+  gh_token = $env.GITHUB_TOKEN
 
 when defined(nimble_dep_graph_cacheEnv):
   import std/os
@@ -289,7 +296,6 @@ proc runApp*(
   outputType: cstring,
   entryReposCsv = DefPackages.join(","),
   maxRepos = MaxRepos,
-  token = "",
   outputDir = OutputDir,
   logLevel = cstring LogLevel,
   nimblePkgs2Dir = cstring"",
@@ -304,7 +310,7 @@ proc runApp*(
     let res = await runAppAync[](
       entryRepos = if repos.len > 0: repos else: @DefPackages,
       maxRepos = maxRepos,
-      token = token,
+      token = gh_token,
       outputDir = outputDir,
       noSvg = true,
       logLevel = logLevel,
