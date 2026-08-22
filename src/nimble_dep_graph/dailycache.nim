@@ -1,19 +1,27 @@
 
-import std/[times, logging]
+import std/[times, logging, strformat]
 import ./[types, cache, utils]
 export cache
 
 proc eqDate(d1, d2: DateTime): bool =
   (d1.year == d2.year) and (d1.yearday() == d2.yearday())
 
-proc getDailyCachedOr*[T](cache: CacheBackendAbc, key: string, getter: proc(): Future[T]): Future[T] {.async.} =
+proc getDailyCachedOr*[T](
+  cache: CacheBackendAbc,
+  key: string,
+  getter: proc(): Future[T],
+  shouldCache: proc(value: T): bool = nil
+): Future[T] {.async.} =
   let datekey = key & "-date"
   let opt = await cache.get(datekey)
   let cur = now().utc
   proc updateCache: Future[T]{.async.} =
     let res = await getter()
-    await cache.set(datekey, cur.format("yyyy-MM-dd"))
-    await cache.set(key, res)
+    if shouldCache.isNil or shouldCache(res):
+      await cache.set(datekey, cur.format("yyyy-MM-dd"))
+      await cache.set(key, res)
+    else:
+      info &"Skipping whole-graph cache for incomplete result: {key}"
     return res
   if opt.isSome:
     let dateStr = opt.unsafeGet

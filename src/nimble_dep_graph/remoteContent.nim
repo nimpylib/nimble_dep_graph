@@ -35,6 +35,8 @@ template buildHeadersCommon(T) =
   result["Accept"] = "application/vnd.github+json"
   result["User-Agent"] = "nimble-dep-graph"
 
+type TooManySubRequestsError* = object of IOError  ## Cloudflare Worker \
+  ## https://developers.cloudflare.com/workers/wrangler/configuration/#limits
 when not defined(js):
   proc buildHeaders(token: Option[string], url: string): HttpHeaders =
     result = newHttpHeaders()
@@ -62,7 +64,14 @@ else:
       body = nbody,
     )
     discard jsDelete opt.cache  # The 'cache' field on 'RequestInitializerDict' is not implemented.
-    result = $(await (await fetch(url.cstring, opt)).text())
+    let fut = fetch(url.cstring, opt)
+    await fut.catch do (e: Error):
+      proc startsWith(s, pre: cstring): bool {.importcpp.}
+      if e.message.startsWith "Too many subrequests by single Worker invocation.":
+        raise newException(TooManySubRequestsError, $e.message)
+      else:
+        {.emit: ["throw ", e].}
+    result = $(await (await fut).text())
 
 export getText
 proc getJson*(client: ApiClient, url: string): Future[JsonNode] {.async.} =

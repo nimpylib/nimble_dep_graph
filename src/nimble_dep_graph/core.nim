@@ -39,6 +39,7 @@ proc getOutputs(
   graph: Graph,
   metadata: Table[string, RepoMetadata],
   errors: Table[string, string],
+  isComplete: bool,
 ): tuple[json, dot, mermaid: string] =
 
   var payload = newJObject()
@@ -55,7 +56,8 @@ proc getOutputs(
   payload["summary"] = %*{
     "nodes": graph.nodes.len,
     "edges": graph.edges.len,
-    "errors": errors.len
+    "errors": errors.len,
+    "complete": isComplete
   }
 
   var reposNode = newJObject()
@@ -82,10 +84,11 @@ proc getOutputs(
     errorsNode[repo] = %errors[repo]
   payload["errors"] = errorsNode
 
+  let completeMarker = "dep-graph-complete: " & $isComplete
   (
     payload.pretty(2) & "\n",
-    toDot(graph),
-    toMermaid(graph)
+    "// " & completeMarker & "\n" & toDot(graph),
+    "%% " & completeMarker & "\n" & toMermaid(graph)
   )
 
 proc toUpperAscii(s: cstring): string =
@@ -125,7 +128,8 @@ proc runAppAync*[R: int|Tup3 =Tup3](
   noSvg = false,
   logLevel: cstring|string = LogLevel,
   nimblePkgs2Dir = "",
-  noLocalPkgs2 = false
+  noLocalPkgs2 = false,
+  cacheBackend: CacheBackendAbc = nil
 ): Future[R]{.async.} =
   template reti(i) =
     when R is int:
@@ -159,18 +163,20 @@ proc runAppAync*[R: int|Tup3 =Tup3](
       info &"Local pkgs2 metadata enabled: {pkgs2Dir.get()}"
 
     let client = ApiClient(token: tokenOpt)
-    let (graph, metadata, errors) = await crawlDependencyGraph(
+    let crawlResult = await crawlDependencyGraph(
       client = client,
       entryRepos = validatedRepos,
       maxRepos = maxRepos,
-      pkgs2Dir = pkgs2Dir
+      pkgs2Dir = pkgs2Dir,
+      cache = cacheBackend
     )
 
     let tup = getOutputs(
       entryRepos = validatedRepos,
-      graph = graph,
-      metadata = metadata,
-      errors = errors,
+      graph = crawlResult.graph,
+      metadata = crawlResult.metadata,
+      errors = crawlResult.errors,
+      isComplete = crawlResult.isComplete,
     )
     when R is_not int:
       return tup
@@ -196,23 +202,23 @@ proc runAppAync*[R: int|Tup3 =Tup3](
 
 
       info "Entry repos: " & validatedRepos.join(", ")
-      info "Graph nodes: " & $graph.nodes.len
-      info "Graph edges: " & $graph.edges.len
-      info "Errors: " & $errors.len
+      info "Graph nodes: " & $crawlResult.graph.nodes.len
+      info "Graph edges: " & $crawlResult.graph.edges.len
+      info "Errors: " & $crawlResult.errors.len
       when defined(js):
         info "Outputs: " & outputDir
       else:
         info "Outputs: " & absolutePath(outputDir)
-      if errors.len > 0:
+      if crawlResult.errors.len > 0:
         var errs = ""
         template addLine(s: string) =
           errs.add(s)
           errs.add '\n'
         addLine "Repos with errors:"
-        var keys = toSeq(errors.keys)
+        var keys = toSeq(crawlResult.errors.keys)
         keys.sort(system.cmp[string])
         for repo in keys:
-          addLine "  - " & repo & ": " & errors[repo]
+          addLine "  - " & repo & ": " & crawlResult.errors[repo]
         error errs
 
       reti 0
@@ -306,6 +312,7 @@ proc runApp*(
     .mapIt(it.strip())
     .filterIt(it.len > 0)
   let resolvedPkgs2 = if nimblePkgs2Dir.len > 0: $nimblePkgs2Dir else: defaultPkgs2Dir()
+  var lastGraphWasComplete = true
   proc getter(): Future[string] {.async.} =
     let res = await runAppAync[](
       entryRepos = if repos.len > 0: repos else: @DefPackages,
@@ -315,15 +322,22 @@ proc runApp*(
       noSvg = true,
       logLevel = logLevel,
       nimblePkgs2Dir = resolvedPkgs2,
-      noLocalPkgs2 = noLocalPkgs2
+      noLocalPkgs2 = noLocalPkgs2,
+      cacheBackend = cache
     )
+    let graphJson = parseJson(res.json)
+    lastGraphWasComplete = graphJson["summary"]["complete"].getBool()
     for t, v in res.fieldPairs:
       if t == outputType:
         return v
     raise newException(InvalidOutTypeError, &"Invalid output type: {outputType}. Expected one of: json, dot, mermaid.")
   if not cache.isNil:
     let key = toKey(outputType, repos, maxRepos, resolvedPkgs2, noLocalPkgs2)
-    let cached = await cache.getDailyCachedOr(key, getter)
+    let cached = await cache.getDailyCachedOr(
+      key,
+      getter,
+      proc(_: string): bool = lastGraphWasComplete
+    )
     return cstring(cached)
   else:
     info "No cache backend configured. Skipping cache."
