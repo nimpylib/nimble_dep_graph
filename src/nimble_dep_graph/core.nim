@@ -224,11 +224,17 @@ proc runAppAync*[R: int|Tup3 =Tup3](
 
       reti 0
   except ValueError as exc:
-    error "ERROR " & exc.msg
-    reti 2
+    when R is int:
+      error "ERROR " & exc.msg
+      reti 2
+    else:
+      raise
   except CatchableError as exc:
-    error "ERROR " & exc.msg
-    reti 1
+    when R is int:
+      error "ERROR " & exc.msg
+      reti 1
+    else:
+      raise
 
 when not defined(js):
   proc runCliApp*(

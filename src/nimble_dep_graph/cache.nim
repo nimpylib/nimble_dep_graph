@@ -94,6 +94,11 @@ method get*(backend: CfApiCacheBackend, key: string): Future[Option[string]]{.as
     let j = try: parseJson(s)
     except IOError, OSError, JsonParsingError, ValueError: unreachable()
 
+    # KV values may themselves be JSON (for example the dependency-entry
+    # cache object). Only Cloudflare API error envelopes have these fields.
+    if j.kind != JObject or not j.hasKey("success") or not j.hasKey("errors"):
+      return some(s)
+
     var
       errMsg: string
       errCode: int
@@ -142,4 +147,3 @@ when isMainModule:
   waitFor cache.set("t", "hello world")
   echo waitFor cache.get"t"
   echo waitFor cache.get"d"
-
