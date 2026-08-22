@@ -111,9 +111,10 @@ proc defaultPkgs2Dir(): string =
     getHomeDir() / ".nimble" / "pkgs2"
 
 const
-  MaxRepos = 200
+  MaxRepos* = 200
   OutputDir = "./out"
   LogLevel = "INFO"
+  GraphConfigOutputType = "config"
 
 type Tup3 = tuple[
   json: string,
@@ -298,6 +299,13 @@ when defined(nimble_dep_graph_cacheEnv):
 
 type
   InvalidOutTypeError* = object of ValueError
+
+proc graphConfig(): string =
+  $(%*{
+    "max_repos": MaxRepos,
+    "max_fetched_entries_per_worker_invocation": MaxFetchedEntriesPerWorkerInvocation
+  })
+
 proc runApp*(
   outputType: cstring,
   entryReposCsv = DefPackages.join(","),
@@ -307,6 +315,8 @@ proc runApp*(
   nimblePkgs2Dir = cstring"",
   noLocalPkgs2 = false
 ): Future[cstring] {.async, exportc.} =
+  if outputType == GraphConfigOutputType:
+    return cstring(graphConfig())
   let repos = entryReposCsv
     .split(',')
     .mapIt(it.strip())

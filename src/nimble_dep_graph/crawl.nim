@@ -9,7 +9,7 @@ const
   EntryCacheDateFormat = "yyyy-MM-dd"
   ## Leaves enough of Cloudflare's 50 subrequests for reading and checkpointing
   ## the cache object, assuming metadata normally takes two GitHub requests.
-  MaxFetchedEntriesPerWorkerInvocation = 20
+  MaxFetchedEntriesPerWorkerInvocation* = 20
   UnfetchedEntryCacheValue = "unfetched"
 
 type
